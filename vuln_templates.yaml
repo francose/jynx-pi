@@ -1,0 +1,9 @@
+- name: "Vulnerable Apache 2.4.29"
+  description: "Apache version 2.4.29 is known to have vulnerabilities."
+  matches:
+    - "Apache/2.4.29"
+
+- name: "Outdated OpenSSL"
+  description: "An outdated version of OpenSSL may be vulnerable."
+  matches:
+    - "OpenSSL 1.0.1"
