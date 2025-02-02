@@ -22,8 +22,8 @@ import (
 // TCP Port Scanner
 // ----------------------
 
-// scanPort attempts a TCP connection to a specific host and port.
-func scanPort(host string, port int, wg *sync.WaitGroup) {
+// scanTCPPort attempts a TCP connection to a specific host and port.
+func scanTCPPort(host string, port int, wg *sync.WaitGroup) {
 	defer wg.Done()
 	address := fmt.Sprintf("%s:%d", host, port)
 	conn, err := net.DialTimeout("tcp", address, 500*time.Millisecond)
@@ -31,15 +31,59 @@ func scanPort(host string, port int, wg *sync.WaitGroup) {
 		return
 	}
 	conn.Close()
-	fmt.Printf("Port %d is open\n", port)
+	fmt.Printf("TCP port %d is open\n", port)
 }
 
-// runPortScanner scans ports in the given range for the target host.
-func runPortScanner(host string, startPort, endPort int) {
+// runTCPScanner scans a range of TCP ports.
+func runTCPScanner(host string, startPort, endPort int) {
 	var wg sync.WaitGroup
 	for port := startPort; port <= endPort; port++ {
 		wg.Add(1)
-		go scanPort(host, port, &wg)
+		go scanTCPPort(host, port, &wg)
+	}
+	wg.Wait()
+}
+
+// ----------------------
+// UDP Port Scanner
+// ----------------------
+
+// scanUDPPort attempts a UDP "scan" on a given host and port.
+// Note: UDP is connectionless; lack of response can be ambiguous.
+func scanUDPPort(host string, port int, wg *sync.WaitGroup) {
+	defer wg.Done()
+	address := fmt.Sprintf("%s:%d", host, port)
+	conn, err := net.DialTimeout("udp", address, 500*time.Millisecond)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	// Send a simple payload. Some protocols might expect different data.
+	message := []byte("Hello")
+	_, err = conn.Write(message)
+	if err != nil {
+		return
+	}
+
+	// Set a read deadline and attempt to read a response.
+	buf := make([]byte, 1024)
+	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	_, err = conn.Read(buf)
+	if err == nil {
+		fmt.Printf("UDP port %d is open/responsive\n", port)
+	} else {
+		// In a real-world scenario, no response could also mean filtered or open.
+		// For this demo, we only print when we get a response.
+	}
+}
+
+// runUDPScanner scans a range of UDP ports.
+func runUDPScanner(host string, startPort, endPort int) {
+	var wg sync.WaitGroup
+	for port := startPort; port <= endPort; port++ {
+		wg.Add(1)
+		go scanUDPPort(host, port, &wg)
 	}
 	wg.Wait()
 }
@@ -48,9 +92,36 @@ func runPortScanner(host string, startPort, endPort int) {
 // HTTP Proxy/Interceptor
 // ----------------------
 
-// proxyHandler intercepts HTTP requests, logs them, and forwards the traffic.
+func handleConnect(w http.ResponseWriter, r *http.Request) {
+	destConn, err := net.DialTimeout("tcp", r.Host, 10*time.Second)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
+		destConn.Close()
+		return
+	}
+	clientConn, _, err := hijacker.Hijack()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		destConn.Close()
+		return
+	}
+	go transfer(destConn, clientConn)
+	go transfer(clientConn, destConn)
+}
+
+func transfer(destination io.WriteCloser, source io.ReadCloser) {
+	defer destination.Close()
+	defer source.Close()
+	io.Copy(destination, source)
+}
+
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
-	// If the method is CONNECT, handle it separately.
 	if r.Method == http.MethodConnect {
 		log.Printf("Intercepted CONNECT request for %s", r.Host)
 		handleConnect(w, r)
@@ -58,7 +129,6 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("Intercepted request: %s %s", r.Method, r.URL.String())
-
 	outReq := r.Clone(r.Context())
 	resp, err := http.DefaultTransport.RoundTrip(outReq)
 	if err != nil {
@@ -76,45 +146,6 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body)
 }
 
-// handleConnect handles HTTPS CONNECT requests by establishing a tunnel.
-func handleConnect(w http.ResponseWriter, r *http.Request) {
-	// Dial the destination host.
-	destConn, err := net.DialTimeout("tcp", r.Host, 10*time.Second)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	}
-
-
-	w.WriteHeader(http.StatusOK)
-
-	// Hijack the connection so we can manually copy data between client and destination.
-	hijacker, ok := w.(http.Hijacker)
-	if !ok {
-		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
-		destConn.Close()
-		return
-	}
-	clientConn, _, err := hijacker.Hijack()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		destConn.Close()
-		return
-	}
-
-	go transfer(destConn, clientConn)
-	go transfer(clientConn, destConn)
-}
-
-// transfer copies data between source and destination.
-func transfer(destination io.WriteCloser, source io.ReadCloser) {
-	defer destination.Close()
-	defer source.Close()
-	io.Copy(destination, source)
-}
-
-
-// startProxy starts the HTTP proxy on the given address.
 func startProxy(listenAddr string) {
 	handler := http.HandlerFunc(proxyHandler)
 	server := &http.Server{
@@ -129,16 +160,13 @@ func startProxy(listenAddr string) {
 // HTTP Repeater/Intruder
 // ----------------------
 
-// sendCustomRequest sends a single HTTP request with a custom payload.
 func sendCustomRequest(method, targetURL string, payload []byte) {
 	req, err := http.NewRequest(method, targetURL, bytes.NewReader(payload))
 	if err != nil {
 		log.Printf("Error creating request: %v", err)
 		return
 	}
-
 	req.Header.Set("User-Agent", "CustomGoRepeater/1.0")
-
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -146,12 +174,10 @@ func sendCustomRequest(method, targetURL string, payload []byte) {
 		return
 	}
 	defer resp.Body.Close()
-
 	body, _ := ioutil.ReadAll(resp.Body)
 	fmt.Printf("Response from %s: %d\n%s\n", targetURL, resp.StatusCode, body)
 }
 
-// runRepeater sends the custom request multiple times.
 func runRepeater(method, targetURL, payload string, count int, delay time.Duration) {
 	for i := 0; i < count; i++ {
 		log.Printf("Sending request iteration %d", i+1)
@@ -164,14 +190,12 @@ func runRepeater(method, targetURL, payload string, count int, delay time.Durati
 // Vulnerability Check Module (Template-Based)
 // ----------------------
 
-// VulnerabilityTemplate represents a simplified vulnerability check template.
 type VulnerabilityTemplate struct {
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"`
-	Matches     []string `yaml:"matches"` // Substrings or regex patterns to search for in the banner
+	Matches     []string `yaml:"matches"`
 }
 
-// loadTemplates loads vulnerability templates from a YAML file.
 func loadTemplates(filePath string) ([]VulnerabilityTemplate, error) {
 	data, err := ioutil.ReadFile(filePath)
 	if err != nil {
@@ -185,7 +209,7 @@ func loadTemplates(filePath string) ([]VulnerabilityTemplate, error) {
 	return templates, nil
 }
 
-// grabBanner connects to the target host and port and returns its banner over plain TCP.
+// grabBanner grabs a banner from a plain TCP connection.
 func grabBanner(host string, port int) (string, error) {
 	address := fmt.Sprintf("%s:%d", host, port)
 	conn, err := net.DialTimeout("tcp", address, 2*time.Second)
@@ -193,7 +217,6 @@ func grabBanner(host string, port int) (string, error) {
 		return "", err
 	}
 	defer conn.Close()
-
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	reader := bufio.NewReader(conn)
 	banner, err := reader.ReadString('\n')
@@ -203,17 +226,14 @@ func grabBanner(host string, port int) (string, error) {
 	return strings.TrimSpace(banner), nil
 }
 
-// grabTLSBanner connects to the target host using TLS and returns certificate information.
+// grabTLSBanner connects via TLS and retrieves certificate details.
 func grabTLSBanner(host string, port int) (string, error) {
 	address := fmt.Sprintf("%s:%d", host, port)
-	conn, err := tls.Dial("tcp", address, &tls.Config{
-		InsecureSkipVerify: true,
-	})
+	conn, err := tls.Dial("tcp", address, &tls.Config{InsecureSkipVerify: true})
 	if err != nil {
 		return "", err
 	}
 	defer conn.Close()
-
 	state := conn.ConnectionState()
 	if len(state.PeerCertificates) > 0 {
 		cert := state.PeerCertificates[0]
@@ -222,7 +242,6 @@ func grabTLSBanner(host string, port int) (string, error) {
 	return "", fmt.Errorf("no certificates found")
 }
 
-// checkUsingTemplates applies loaded templates to the given banner.
 func checkUsingTemplates(banner string, templates []VulnerabilityTemplate) {
 	found := false
 	for _, tmpl := range templates {
@@ -230,7 +249,6 @@ func checkUsingTemplates(banner string, templates []VulnerabilityTemplate) {
 			if strings.Contains(banner, match) {
 				fmt.Printf("Vulnerability Detected: %s\nDescription: %s\n", tmpl.Name, tmpl.Description)
 				found = true
-				// Optionally break here or continue to check multiple templates.
 			}
 		}
 	}
@@ -239,8 +257,7 @@ func checkUsingTemplates(banner string, templates []VulnerabilityTemplate) {
 	}
 }
 
-// runVulnerabilityCheck grabs a banner from the target and applies vulnerability templates.
-// If secure is true, it uses TLS to retrieve certificate information.
+// runVulnerabilityCheck grabs a banner (plain or TLS) and applies vulnerability templates.
 func runVulnerabilityCheck(target string, port int, templatePath string, secure bool) {
 	fmt.Printf("Connecting to %s on port %d...\n", target, port)
 	var banner string
@@ -255,7 +272,6 @@ func runVulnerabilityCheck(target string, port int, templatePath string, secure 
 		return
 	}
 	fmt.Printf("Banner: %s\n", banner)
-
 	templates, err := loadTemplates(templatePath)
 	if err != nil {
 		fmt.Printf("Error loading templates: %v\n", err)
@@ -269,13 +285,12 @@ func runVulnerabilityCheck(target string, port int, templatePath string, secure 
 // ----------------------
 
 func main() {
-	// Define common flags
 	mode := flag.String("mode", "", "Mode to run: scanner, proxy, repeater, check")
-
 	// Scanner flags
 	scannerHost := flag.String("host", "127.0.0.1", "Target host for scanning")
 	startPort := flag.Int("start", 1, "Start port for scanning")
 	endPort := flag.Int("end", 1024, "End port for scanning")
+	protocol := flag.String("protocol", "tcp", "Protocol for scanning: tcp or udp")
 
 	// Proxy flags
 	proxyAddr := flag.String("listen", ":8080", "Listen address for proxy")
@@ -297,8 +312,14 @@ func main() {
 
 	switch *mode {
 	case "scanner":
-		fmt.Printf("Scanning host %s from port %d to %d...\n", *scannerHost, *startPort, *endPort)
-		runPortScanner(*scannerHost, *startPort, *endPort)
+		fmt.Printf("Scanning host %s from port %d to %d over %s...\n", *scannerHost, *startPort, *endPort, *protocol)
+		if strings.ToLower(*protocol) == "tcp" {
+			runTCPScanner(*scannerHost, *startPort, *endPort)
+		} else if strings.ToLower(*protocol) == "udp" {
+			runUDPScanner(*scannerHost, *startPort, *endPort)
+		} else {
+			fmt.Println("Unsupported protocol. Please choose 'tcp' or 'udp'.")
+		}
 
 	case "proxy":
 		fmt.Printf("Starting HTTP proxy on %s...\n", *proxyAddr)
