@@ -18,10 +18,16 @@ The script has several modes that you can activate using the `-mode` flag:
 
 Use this mode to perform a basic TCP port scan on a target host. You can specify the host and port range.
 
-**Example:**
+**TCP Scan Example:**
 
 ```bash
 ./jynx-pi -mode=scanner -host=192.168.1.100 -start=1 -end=1024
+```
+
+**UDP Scan Example:**
+```bash
+./jynx-pi -mode=scanner -host=192.168.1.100 -start=1 -end=1024 -protocol=udp
+
 ```
 
 This command will try to connect to each port from 1 to 1024 on the host 192.168.1.100 and print out the ones that are open.
