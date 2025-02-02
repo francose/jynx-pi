@@ -50,10 +50,16 @@ func runPortScanner(host string, startPort, endPort int) {
 
 // proxyHandler intercepts HTTP requests, logs them, and forwards the traffic.
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
+	// If the method is CONNECT, handle it separately.
+	if r.Method == http.MethodConnect {
+		log.Printf("Intercepted CONNECT request for %s", r.Host)
+		handleConnect(w, r)
+		return
+	}
+
 	log.Printf("Intercepted request: %s %s", r.Method, r.URL.String())
 
 	outReq := r.Clone(r.Context())
-
 	resp, err := http.DefaultTransport.RoundTrip(outReq)
 	if err != nil {
 		http.Error(w, "Error forwarding the request", http.StatusBadGateway)
@@ -69,6 +75,44 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 }
+
+// handleConnect handles HTTPS CONNECT requests by establishing a tunnel.
+func handleConnect(w http.ResponseWriter, r *http.Request) {
+	// Dial the destination host.
+	destConn, err := net.DialTimeout("tcp", r.Host, 10*time.Second)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
+
+	w.WriteHeader(http.StatusOK)
+
+	// Hijack the connection so we can manually copy data between client and destination.
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
+		destConn.Close()
+		return
+	}
+	clientConn, _, err := hijacker.Hijack()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		destConn.Close()
+		return
+	}
+
+	go transfer(destConn, clientConn)
+	go transfer(clientConn, destConn)
+}
+
+// transfer copies data between source and destination.
+func transfer(destination io.WriteCloser, source io.ReadCloser) {
+	defer destination.Close()
+	defer source.Close()
+	io.Copy(destination, source)
+}
+
 
 // startProxy starts the HTTP proxy on the given address.
 func startProxy(listenAddr string) {

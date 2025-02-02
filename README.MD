@@ -1,165 +1,77 @@
 
 
+### 1. Build the Application
 
-```markdown
-# jynx-pi
+After ensuring your dependencies are set up (e.g., unsetting proxy variables if needed), compile the tool:
 
-**jynx-pi** is a multi-mode pentesting tool written in Go. It integrates several functions:
-- **Port Scanning:** Scans a range of ports on a target host.
-- **HTTP Proxy/Interceptor:** Intercepts and forwards HTTP traffic.
-- **HTTP Repeater/Intruder:** Sends repeated/customized HTTP requests.
-- **Vulnerability Check:** Grabs service banners and checks them against YAML-defined vulnerability templates.
+```bash
+go build -o jynx-pi main.go
+```
 
-> **Disclaimer:** Use this tool only on systems where you have explicit authorization.
+---
 
-## Prerequisites
+### 2. Available Modes and How to Use Them
 
-- [Go](https://golang.org/dl/) (version 1.16 or later)
-- Git (optional, for cloning the repository)
+The script has several modes that you can activate using the `-mode` flag:
 
-## Setup Instructions
+#### **Scanner Mode**
 
-1. **Clone or Download the Repository**
+Use this mode to perform a basic TCP port scan on a target host. You can specify the host and port range.
 
-   ```bash
-   git clone https://github.com/yourusername/jynx-pi.git
-   cd jynx-pi
-   ```
-
-2. **Initialize Go Modules**
-
-   Ensure you are in the project directory and initialize the module:
-
-   ```bash
-   go mod init jynx-pi
-   ```
-
-   Then tidy up to fetch dependencies:
-
-   ```bash
-   export GOPROXY=direct
-   go mod tidy
-   ```
-
-   If you are using a proxy (such as in a WSL2 environment), make sure to unset any interfering proxy environment variables:
-
-   ```bash
-   unset http_proxy
-   unset https_proxy
-   unset HTTP_PROXY
-   unset HTTPS_PROXY
-   ```
-
-3. **Build the Application**
-
-   Compile the binary with:
-
-   ```bash
-   go build -o jynx-pi main.go
-   ```
-
-## Usage
-
-The tool operates in several modes. You select the mode by using the `-mode` flag.
-
-### 1. Scanner Mode
-
-Scans a range of ports on a target host.
+**Example:**
 
 ```bash
 ./jynx-pi -mode=scanner -host=192.168.1.100 -start=1 -end=1024
 ```
 
-This command scans ports 1 to 1024 on the specified host.
+This command will try to connect to each port from 1 to 1024 on the host 192.168.1.100 and print out the ones that are open.
 
-### 2. Proxy Mode
+---
 
-Starts an HTTP proxy to intercept and forward traffic.
+#### **Proxy Mode**
+
+This mode starts an HTTP proxy that intercepts and logs HTTP requests before forwarding them. It’s useful if you want to manually inspect or modify traffic.
+
+**Example:**
 
 ```bash
 ./jynx-pi -mode=proxy -listen=":8080"
 ```
 
-The proxy will listen on port 8080.
+This starts the proxy on port 8080.
 
-### 3. Repeater Mode
+---
 
-Sends a customizable HTTP request repeatedly.
+#### **Repeater Mode**
+
+Repeater mode sends repeated HTTP requests to a specified URL. This can be helpful for testing how a server handles repeated requests or for manual testing scenarios.
+
+**Example:**
 
 ```bash
 ./jynx-pi -mode=repeater -url="http://example.com/api" -method=POST -data='{"key": "value"}' -count=5 -delay=3s
 ```
 
-This sends a POST request to the target URL 5 times with a 3‑second delay between requests.
+This command sends a POST request to the URL 5 times with a 3‑second delay between requests.
 
-### 4. Vulnerability Check Mode
+---
 
-Grabs a service banner from a target and checks it against vulnerability templates defined in a YAML file.
+#### **Vulnerability Check Mode**
 
-#### Create a YAML Template File
+This mode performs a banner grab and then checks the result against vulnerability templates defined in a YAML file.  
+By default, it performs a plain TCP banner grab. If you use the `-secure` flag, it will perform a TLS handshake (for HTTPS services) and then extract certificate details as the banner.
 
-Create a file named `vuln_templates.yaml` in the same directory as your binary, for example:
-
-```yaml
-- name: "Vulnerable Apache 2.4.29"
-  description: "Apache version 2.4.29 is known to have vulnerabilities."
-  matches:
-    - "Apache/2.4.29"
-
-- name: "Outdated OpenSSL"
-  description: "An outdated version of OpenSSL may be vulnerable."
-  matches:
-    - "OpenSSL 1.0.1"
-```
-
-#### Run the Vulnerability Check
+**Plain HTTP Example:**
 
 ```bash
-./jynx-pi -mode=check -checkhost=example.com -checkport=80 -templates=vuln_templates.yaml
+./jynx-pi -mode=check -checkhost=facelegal.com -checkport=80 -templates=vuln_templates.yaml
 ```
 
-This will connect to `example.com` on port 80, grab the banner, and check it against the patterns defined in `vuln_templates.yaml`.
+**TLS/HTTPS Example:**
 
-## Troubleshooting
+```bash
+./jynx-pi -mode=check -checkhost=facelegal.com -checkport=443 -templates=vuln_templates.yaml -secure=true
+```
 
-- **Proxy Issues:**  
-  If Go is trying to use an unwanted proxy (like a SOCKS5 proxy at `127.0.0.1:9050`), ensure you unset any proxy variables as shown above.
+Make sure you create a `vuln_templates.yaml` file with your vulnerability definitions (for example, to look for specific versions in banners or certificate data).
 
-- **Dependencies:**  
-  Make sure you have a working internet connection for module downloads. If issues persist, double-check your `GOPROXY` settings.
-
-
-
-
-## Additional Check
-
-1. **Unset Proxy Environment Variables in Your Shell:**  
-   Run the following commands in your terminal:
-
-   ```bash
-   unset http_proxy
-   unset https_proxy
-   unset HTTP_PROXY
-   unset HTTPS_PROXY
-   unset socks_proxy
-   ```
-
-2. **Confirm They Are Unset:**  
-   Verify by running:
-
-   ```bash
-   env | grep -i proxy
-   ```
-
-   You should see no lines related to `http_proxy` or `https_proxy` (aside from any intentional settings like `GOPROXY=direct`).
-
-3. **Re-run Your Command:**  
-   Once these are unset, run your repeater mode command again:
-
-   ```bash
-   ./jynx-pi -mode=repeater -url="http://example.com/api" -method=POST -data='{"key": "value"}' -count=5 -delay=3s
-   ```
-
-## License
-
-MIT
