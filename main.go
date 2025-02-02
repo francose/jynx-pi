@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/go-ping/ping"
+	"golang.org/x/net/proxy"
 	"gopkg.in/yaml.v2"
 )
 
@@ -23,7 +24,6 @@ import (
 // TCP Port Scanner
 // ----------------------
 
-// scanTCPPort attempts a TCP connection to a specific host and port.
 func scanTCPPort(host string, port int, wg *sync.WaitGroup) {
 	defer wg.Done()
 	address := fmt.Sprintf("%s:%d", host, port)
@@ -35,7 +35,6 @@ func scanTCPPort(host string, port int, wg *sync.WaitGroup) {
 	fmt.Printf("TCP port %d is open\n", port)
 }
 
-// runTCPScanner scans a range of TCP ports.
 func runTCPScanner(host string, startPort, endPort int) {
 	var wg sync.WaitGroup
 	for port := startPort; port <= endPort; port++ {
@@ -49,7 +48,6 @@ func runTCPScanner(host string, startPort, endPort int) {
 // UDP Port Scanner
 // ----------------------
 
-// scanUDPPort attempts a UDP "scan" on a given host and port.
 func scanUDPPort(host string, port int, wg *sync.WaitGroup) {
 	defer wg.Done()
 	address := fmt.Sprintf("%s:%d", host, port)
@@ -58,14 +56,11 @@ func scanUDPPort(host string, port int, wg *sync.WaitGroup) {
 		return
 	}
 	defer conn.Close()
-
-	// Send a simple payload.
 	message := []byte("Hello")
 	_, err = conn.Write(message)
 	if err != nil {
 		return
 	}
-
 	buf := make([]byte, 1024)
 	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 	_, err = conn.Read(buf)
@@ -76,7 +71,6 @@ func scanUDPPort(host string, port int, wg *sync.WaitGroup) {
 	}
 }
 
-// runUDPScanner scans a range of UDP ports.
 func runUDPScanner(host string, startPort, endPort int) {
 	var wg sync.WaitGroup
 	for port := startPort; port <= endPort; port++ {
@@ -125,7 +119,6 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		handleConnect(w, r)
 		return
 	}
-
 	log.Printf("Intercepted request: %s %s", r.Method, r.URL.String())
 	outReq := r.Clone(r.Context())
 	resp, err := http.DefaultTransport.RoundTrip(outReq)
@@ -134,7 +127,6 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
-
 	for key, values := range resp.Header {
 		for _, v := range values {
 			w.Header().Add(key, v)
@@ -155,17 +147,33 @@ func startProxy(listenAddr string) {
 }
 
 // ----------------------
-// HTTP Repeater/Intruder
+// HTTP Repeater/Intruder (with Proxy Support)
 // ----------------------
 
-func sendCustomRequest(method, targetURL string, payload []byte) {
+func newHTTPClient(proxyAddr string) (*http.Client, error) {
+	if proxyAddr != "" {
+		dialer, err := proxy.SOCKS5("tcp", proxyAddr, nil, proxy.Direct)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create proxy dialer: %v", err)
+		}
+		transport := &http.Transport{
+			Dial: dialer.Dial,
+		}
+		return &http.Client{
+			Transport: transport,
+			Timeout:   10 * time.Second,
+		}, nil
+	}
+	return &http.Client{Timeout: 10 * time.Second}, nil
+}
+
+func sendCustomRequest(client *http.Client, method, targetURL string, payload []byte) {
 	req, err := http.NewRequest(method, targetURL, bytes.NewReader(payload))
 	if err != nil {
 		log.Printf("Error creating request: %v", err)
 		return
 	}
 	req.Header.Set("User-Agent", "CustomGoRepeater/1.0")
-	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("Request error: %v", err)
@@ -176,10 +184,10 @@ func sendCustomRequest(method, targetURL string, payload []byte) {
 	fmt.Printf("Response from %s: %d\n%s\n", targetURL, resp.StatusCode, body)
 }
 
-func runRepeater(method, targetURL, payload string, count int, delay time.Duration) {
+func runRepeater(client *http.Client, method, targetURL, payload string, count int, delay time.Duration) {
 	for i := 0; i < count; i++ {
 		log.Printf("Sending request iteration %d", i+1)
-		sendCustomRequest(method, targetURL, []byte(payload))
+		sendCustomRequest(client, method, targetURL, []byte(payload))
 		time.Sleep(delay)
 	}
 }
@@ -207,7 +215,6 @@ func loadTemplates(filePath string) ([]VulnerabilityTemplate, error) {
 	return templates, nil
 }
 
-// grabBanner grabs a banner from a plain TCP connection.
 func grabBanner(host string, port int) (string, error) {
 	address := fmt.Sprintf("%s:%d", host, port)
 	conn, err := net.DialTimeout("tcp", address, 2*time.Second)
@@ -224,7 +231,6 @@ func grabBanner(host string, port int) (string, error) {
 	return strings.TrimSpace(banner), nil
 }
 
-// grabTLSBanner connects via TLS and retrieves certificate details.
 func grabTLSBanner(host string, port int) (string, error) {
 	address := fmt.Sprintf("%s:%d", host, port)
 	conn, err := tls.Dial("tcp", address, &tls.Config{InsecureSkipVerify: true})
@@ -255,7 +261,6 @@ func checkUsingTemplates(banner string, templates []VulnerabilityTemplate) {
 	}
 }
 
-// runVulnerabilityCheck grabs a banner (plain or TLS) and applies vulnerability templates.
 func runVulnerabilityCheck(target string, port int, templatePath string, secure bool) {
 	fmt.Printf("Connecting to %s on port %d...\n", target, port)
 	var banner string
@@ -282,7 +287,6 @@ func runVulnerabilityCheck(target string, port int, templatePath string, secure 
 // Local Network Device Discovery
 // ----------------------
 
-// hosts returns a slice of IP addresses in the given CIDR.
 func hosts(cidr string) ([]string, error) {
 	ip, ipnet, err := net.ParseCIDR(cidr)
 	if err != nil {
@@ -292,14 +296,12 @@ func hosts(cidr string) ([]string, error) {
 	for ip := ip.Mask(ipnet.Mask); ipnet.Contains(ip); inc(ip) {
 		ips = append(ips, ip.String())
 	}
-	// Exclude network and broadcast addresses.
 	if len(ips) > 2 {
 		return ips[1 : len(ips)-1], nil
 	}
 	return ips, nil
 }
 
-// inc increments an IP address.
 func inc(ip net.IP) {
 	for j := len(ip) - 1; j >= 0; j-- {
 		ip[j]++
@@ -309,7 +311,6 @@ func inc(ip net.IP) {
 	}
 }
 
-// discoverNetwork performs a ping sweep across a CIDR range.
 func discoverNetwork(cidr string) {
 	ips, err := hosts(cidr)
 	if err != nil {
@@ -326,11 +327,10 @@ func discoverNetwork(cidr string) {
 				log.Printf("Error creating pinger for %s: %v", ip, err)
 				return
 			}
-			// Use privileged mode if running as root; otherwise, it may fall back.
 			pinger.SetPrivileged(true)
 			pinger.Count = 1
 			pinger.Timeout = 1 * time.Second
-			err = pinger.Run() // blocks until finished
+			err = pinger.Run()
 			if err != nil {
 				log.Printf("Ping error for %s: %v", ip, err)
 				return
@@ -356,7 +356,7 @@ func main() {
 	endPort := flag.Int("end", 1024, "End port for scanning")
 	protocol := flag.String("protocol", "tcp", "Protocol for scanning: tcp or udp")
 
-	// Proxy flags
+	// Proxy flags (for built-in proxy mode, if needed)
 	proxyAddr := flag.String("listen", ":8080", "Listen address for proxy")
 
 	// Repeater flags
@@ -375,6 +375,9 @@ func main() {
 	// Discovery flags
 	cidr := flag.String("cidr", "", "CIDR for local network device discovery (e.g., 192.168.1.0/24)")
 
+	// New Proxy flag: Use a SOCKS5 proxy for outbound HTTP connections (like Tor)
+	socksProxy := flag.String("socks", "", "Optional SOCKS5 proxy address (e.g., 127.0.0.1:9050)")
+
 	flag.Parse()
 
 	switch *mode {
@@ -387,31 +390,30 @@ func main() {
 		} else {
 			fmt.Println("Unsupported protocol. Please choose 'tcp' or 'udp'.")
 		}
-
 	case "proxy":
 		fmt.Printf("Starting HTTP proxy on %s...\n", *proxyAddr)
 		startProxy(*proxyAddr)
-
 	case "repeater":
 		if *targetURL == "" {
 			log.Fatal("Error: -url flag is required for repeater mode.")
 		}
+		client, err := newHTTPClient(*socksProxy)
+		if err != nil {
+			log.Fatalf("Error creating HTTP client: %v", err)
+		}
 		fmt.Printf("Repeating %s requests to %s (%d times)...\n", *method, *targetURL, *repeatCount)
-		runRepeater(*method, *targetURL, *payload, *repeatCount, *delay)
-
+		runRepeater(client, *method, *targetURL, *payload, *repeatCount, *delay)
 	case "check":
 		if *checkTarget == "" {
 			log.Fatal("Error: -checkhost flag is required for vulnerability check mode.")
 		}
 		fmt.Printf("Running vulnerability check on %s:%d...\n", *checkTarget, *checkPort)
 		runVulnerabilityCheck(*checkTarget, *checkPort, *templatePath, *checkSecure)
-
 	case "discover":
 		if *cidr == "" {
 			log.Fatal("Error: -cidr flag is required for discovery mode.")
 		}
 		discoverNetwork(*cidr)
-
 	default:
 		fmt.Println("Usage:")
 		flag.PrintDefaults()

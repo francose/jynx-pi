@@ -88,3 +88,10 @@ Make sure you create a `vuln_templates.yaml` file with your vulnerability defini
 ```bash
 sudo ./jynx-pi -mode=discover -cidr="192.168.1.0/24"
 ```
+
+#### **SOCKS5 Proxy Support**
+**Example:**
+
+```bash
+./jynx-pi -mode=repeater -url="http://example.com/api" -method=GET -socks="127.0.0.1:9050" -count=3 -delay=3s
+```
