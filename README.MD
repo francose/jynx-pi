@@ -81,3 +81,10 @@ By default, it performs a plain TCP banner grab. If you use the `-secure` flag, 
 
 Make sure you create a `vuln_templates.yaml` file with your vulnerability definitions (for example, to look for specific versions in banners or certificate data).
 
+#### **Local Network Device Discovery**
+(Running as root may be necessary for sending ICMP packets)
+
+**Example:**
+```bash
+sudo ./jynx-pi -mode=discover -cidr="192.168.1.0/24"
+```
