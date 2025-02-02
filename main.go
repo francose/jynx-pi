@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-ping/ping"
 	"gopkg.in/yaml.v2"
 )
 
@@ -49,7 +50,6 @@ func runTCPScanner(host string, startPort, endPort int) {
 // ----------------------
 
 // scanUDPPort attempts a UDP "scan" on a given host and port.
-// Note: UDP is connectionless; lack of response can be ambiguous.
 func scanUDPPort(host string, port int, wg *sync.WaitGroup) {
 	defer wg.Done()
 	address := fmt.Sprintf("%s:%d", host, port)
@@ -59,22 +59,20 @@ func scanUDPPort(host string, port int, wg *sync.WaitGroup) {
 	}
 	defer conn.Close()
 
-	// Send a simple payload. Some protocols might expect different data.
+	// Send a simple payload.
 	message := []byte("Hello")
 	_, err = conn.Write(message)
 	if err != nil {
 		return
 	}
 
-	// Set a read deadline and attempt to read a response.
 	buf := make([]byte, 1024)
 	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 	_, err = conn.Read(buf)
 	if err == nil {
 		fmt.Printf("UDP port %d is open/responsive\n", port)
 	} else {
-		// In a real-world scenario, no response could also mean filtered or open.
-		// For this demo, we only print when we get a response.
+		log.Printf("UDP read error for port %d: %v", port, err)
 	}
 }
 
@@ -281,11 +279,77 @@ func runVulnerabilityCheck(target string, port int, templatePath string, secure 
 }
 
 // ----------------------
+// Local Network Device Discovery
+// ----------------------
+
+// hosts returns a slice of IP addresses in the given CIDR.
+func hosts(cidr string) ([]string, error) {
+	ip, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return nil, err
+	}
+	var ips []string
+	for ip := ip.Mask(ipnet.Mask); ipnet.Contains(ip); inc(ip) {
+		ips = append(ips, ip.String())
+	}
+	// Exclude network and broadcast addresses.
+	if len(ips) > 2 {
+		return ips[1 : len(ips)-1], nil
+	}
+	return ips, nil
+}
+
+// inc increments an IP address.
+func inc(ip net.IP) {
+	for j := len(ip) - 1; j >= 0; j-- {
+		ip[j]++
+		if ip[j] > 0 {
+			break
+		}
+	}
+}
+
+// discoverNetwork performs a ping sweep across a CIDR range.
+func discoverNetwork(cidr string) {
+	ips, err := hosts(cidr)
+	if err != nil {
+		log.Fatalf("Error parsing CIDR: %v", err)
+	}
+	var wg sync.WaitGroup
+	fmt.Printf("Starting device discovery on %s...\n", cidr)
+	for _, ip := range ips {
+		wg.Add(1)
+		go func(ip string) {
+			defer wg.Done()
+			pinger, err := ping.NewPinger(ip)
+			if err != nil {
+				log.Printf("Error creating pinger for %s: %v", ip, err)
+				return
+			}
+			// Use privileged mode if running as root; otherwise, it may fall back.
+			pinger.SetPrivileged(true)
+			pinger.Count = 1
+			pinger.Timeout = 1 * time.Second
+			err = pinger.Run() // blocks until finished
+			if err != nil {
+				log.Printf("Ping error for %s: %v", ip, err)
+				return
+			}
+			stats := pinger.Statistics()
+			if stats.PacketsRecv > 0 {
+				fmt.Printf("Device found: %s\n", ip)
+			}
+		}(ip)
+	}
+	wg.Wait()
+}
+
+// ----------------------
 // Main: Mode Selection via Flags
 // ----------------------
 
 func main() {
-	mode := flag.String("mode", "", "Mode to run: scanner, proxy, repeater, check")
+	mode := flag.String("mode", "", "Mode to run: scanner, proxy, repeater, check, discover")
 	// Scanner flags
 	scannerHost := flag.String("host", "127.0.0.1", "Target host for scanning")
 	startPort := flag.Int("start", 1, "Start port for scanning")
@@ -307,6 +371,9 @@ func main() {
 	checkPort := flag.Int("checkport", 80, "Target port for vulnerability check")
 	templatePath := flag.String("templates", "vuln_templates.yaml", "Path to vulnerability templates YAML file")
 	checkSecure := flag.Bool("secure", false, "Use TLS for banner grabbing (default port 443 if not specified)")
+
+	// Discovery flags
+	cidr := flag.String("cidr", "", "CIDR for local network device discovery (e.g., 192.168.1.0/24)")
 
 	flag.Parse()
 
@@ -338,6 +405,12 @@ func main() {
 		}
 		fmt.Printf("Running vulnerability check on %s:%d...\n", *checkTarget, *checkPort)
 		runVulnerabilityCheck(*checkTarget, *checkPort, *templatePath, *checkSecure)
+
+	case "discover":
+		if *cidr == "" {
+			log.Fatal("Error: -cidr flag is required for discovery mode.")
+		}
+		discoverNetwork(*cidr)
 
 	default:
 		fmt.Println("Usage:")
