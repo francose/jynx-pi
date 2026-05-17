@@ -1,8 +1,14 @@
+# jynx-pi
 
+A Go networking exercise covering port scanning, HTTP proxying, request repeating, banner-based vulnerability checks, and ICMP host discovery — all in a single static binary.
 
-### 1. Build the Application
+> **Scope note:** this is a learning / portfolio project, not a production pentest tool. For real engagements use [`nmap`](https://nmap.org/), [`Burp Suite`](https://portswigger.net/burp), [`mitmproxy`](https://mitmproxy.org/), and [`nuclei`](https://github.com/projectdiscovery/nuclei) — they handle the long tail of edge cases this code doesn't. The point of `jynx-pi` is to show clean Go networking primitives (goroutines + `sync.WaitGroup`, SOCKS5 dialers, ICMP, TLS handshake, YAML templates) in one readable file.
 
-After ensuring your dependencies are set up (e.g., unsetting proxy variables if needed), compile the tool:
+> **Authorization:** use only against systems you own or have explicit written permission to test. See [LICENSE](LICENSE).
+
+---
+
+## Build
 
 ```bash
 go build -o jynx-pi main.go
@@ -10,88 +16,84 @@ go build -o jynx-pi main.go
 
 ---
 
-### 2. Available Modes and How to Use Them
+## Modes
 
-The script has several modes that you can activate using the `-mode` flag:
+Mode is selected with `-mode=<name>`. Each mode has its own flag set.
 
-#### **Scanner Mode**
-
-Use this mode to perform a basic TCP port scan on a target host. You can specify the host and port range.
-
-**TCP Scan Example:**
+### Scanner — TCP / UDP port sweep
 
 ```bash
+# TCP
 ./jynx-pi -mode=scanner -host=192.168.1.100 -start=1 -end=1024
-```
 
-**UDP Scan Example:**
-```bash
+# UDP (best-effort — see caveats below)
 ./jynx-pi -mode=scanner -host=192.168.1.100 -start=1 -end=1024 -protocol=udp
-
 ```
 
-This command will try to connect to each port from 1 to 1024 on the host 192.168.1.100 and print out the ones that are open.
+**Caveat:** the UDP mode sends a generic probe and waits for a response. Most real UDP services (DNS, SNMP, NTP, etc.) only respond to protocol-specific queries, so UDP results are best treated as hints. Use `nmap -sU` with NSE probes for accurate UDP scanning.
 
----
-
-#### **Proxy Mode**
-
-This mode starts an HTTP proxy that intercepts and logs HTTP requests before forwarding them. It’s useful if you want to manually inspect or modify traffic.
-
-**Example:**
+### Proxy — basic HTTP intercept / forward
 
 ```bash
 ./jynx-pi -mode=proxy -listen=":8080"
 ```
 
-This starts the proxy on port 8080.
+Logs `CONNECT` and regular HTTP requests as they pass through. **Does not perform TLS MITM** — for that you need a CA cert and rewriting machinery; use Burp / mitmproxy.
 
----
-
-#### **Repeater Mode**
-
-Repeater mode sends repeated HTTP requests to a specified URL. This can be helpful for testing how a server handles repeated requests or for manual testing scenarios.
-
-**Example:**
+### Repeater — fire the same HTTP request N times
 
 ```bash
-./jynx-pi -mode=repeater -url="http://example.com/api" -method=POST -data='{"key": "value"}' -count=5 -delay=3s
+./jynx-pi -mode=repeater \
+  -url="http://example.com/api" \
+  -method=POST \
+  -data='{"key":"value"}' \
+  -count=5 \
+  -delay=3s
 ```
 
-This command sends a POST request to the URL 5 times with a 3‑second delay between requests.
-
----
-
-#### **Vulnerability Check Mode**
-
-This mode performs a banner grab and then checks the result against vulnerability templates defined in a YAML file.  
-By default, it performs a plain TCP banner grab. If you use the `-secure` flag, it will perform a TLS handshake (for HTTPS services) and then extract certificate details as the banner.
-
-**Plain HTTP Example:**
+### Vulnerability check — banner grab + template match
 
 ```bash
-./jynx-pi -mode=check -checkhost=facelegal.com -checkport=80 -templates=vuln_templates.yaml
+# Plain TCP banner
+./jynx-pi -mode=check -checkhost=scanme.nmap.org -checkport=22 -templates=vuln_templates.yaml
+
+# TLS handshake (cert subject/issuer as the "banner")
+./jynx-pi -mode=check -checkhost=scanme.nmap.org -checkport=443 -templates=vuln_templates.yaml -secure=true
 ```
 
-**TLS/HTTPS Example:**
+Templates are YAML with `name`, `description`, and a list of `matches` (substring patterns). See `vuln_templates.yaml` for an example.
 
-```bash
-./jynx-pi -mode=check -checkhost=facelegal.com -checkport=443 -templates=vuln_templates.yaml -secure=true
-```
+### Discover — ICMP host sweep over a CIDR
 
-Make sure you create a `vuln_templates.yaml` file with your vulnerability definitions (for example, to look for specific versions in banners or certificate data).
-
-#### **Local Network Device Discovery**
-(Running as root may be necessary for sending ICMP packets)
-
-**Example:**
 ```bash
 sudo ./jynx-pi -mode=discover -cidr="192.168.1.0/24"
 ```
 
-#### **SOCKS5 Proxy Support**
-**Example:**
+Requires root (raw ICMP sockets). For a /16 or larger, this currently spawns one goroutine per host without a worker pool — works fine for /24 lab subnets, will exhaust file descriptors on bigger ranges.
+
+### SOCKS5 outbound (repeater only)
 
 ```bash
-./jynx-pi -mode=repeater -url="http://example.com/api" -method=GET -socks="127.0.0.1:9050" -count=3 -delay=3s
+./jynx-pi -mode=repeater -url="http://example.com/api" -socks="127.0.0.1:9050" -count=3 -delay=3s
 ```
+
+Routes outbound traffic through a SOCKS5 endpoint (e.g. a local Tor instance).
+
+---
+
+## Known limitations (it's a learning project)
+
+- **No worker pool** on scanner / discover — large port or CIDR ranges will hit FD limits.
+- **UDP scanner is generic** — false negatives on protocol-specific services.
+- **HTTP proxy is forward-only** — no TLS MITM, no request history, no replay.
+- **Vuln check uses `strings.Contains`** — no version-range or regex matching; false positives are possible (`"Apache/2.4.29"` matches `"Apache/2.4.290"`).
+- **Banner grab reads one `\n`-terminated line** — fine for SSH-style services, not for HTTP without sending a request first.
+- **Uses deprecated `ioutil`** and an archived `go-ping/ping` dependency. Modernization is a future cleanup.
+
+The companion document for what a hardened version would look like: pick one mode and build it out properly (the vuln-check mode is the most interesting candidate — Nuclei-lite).
+
+---
+
+## License
+
+[MIT](LICENSE). Educational / authorized-testing use only.

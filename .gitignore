@@ -1,0 +1,19 @@
+# Compiled binary
+/jynx-pi
+/jynx-pi.exe
+
+# Go build artifacts
+*.exe
+*.test
+*.out
+*.prof
+
+# Vendor / module cache
+/vendor/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*~
